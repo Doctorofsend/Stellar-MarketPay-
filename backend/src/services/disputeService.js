@@ -1,3 +1,4 @@
+/** @typedef {import("./serviceTypes").DisputeRow} DisputeRow */
 "use strict";
 
 const pool = require("../db/pool");
@@ -94,6 +95,11 @@ async function getDisputeEvents(jobId) {
   }));
 }
 
+/**
+ * Validate an upload-service CID; rejects malformed values with status 422.
+ * @param {string} cid Supported CIDv0 Qm or CIDv1 bafy value.
+ * @returns {string}
+ */
 function validateIpfsCid(cid) {
   if (typeof cid !== "string" || !IPFS_CID_PATTERN.test(cid)) {
     const e = new Error("Invalid IPFS CID returned from upload service");
@@ -104,6 +110,12 @@ function validateIpfsCid(cid) {
   return cid;
 }
 
+/**
+ * Create or resolve a participant dispute; returns the raw snake_case disputes row.
+ * @param {string} jobId Job UUID.
+ * @param {string} raisedBy Stellar G-address.
+ * @returns {Promise<{success: boolean, dispute: DisputeRow}>}
+ */
 async function createDispute(jobId, raisedBy) {
   if (!jobId || !raisedBy) {
     const e = new Error("Job ID and raisedBy are required");
@@ -154,6 +166,15 @@ async function createDispute(jobId, raisedBy) {
   return { success: true, dispute: rows[0] };
 }
 
+/**
+ * Upload participant evidence (maximum 5 MiB), persist metadata, and attempt supplementary on-chain anchoring.
+ * @param {string} jobId Job UUID.
+ * @param {string} uploaderAddress Stellar G-address.
+ * @param {Buffer} fileBuffer Attachment bytes.
+ * @param {string} fileName Original filename.
+ * @param {string} mimeType Declared MIME type.
+ * @returns {Promise<{success: boolean, data: {id: string, uploaderAddress: string, fileName: string, fileSize: number, mimeType: string, ipfsCid: string, pinned: boolean, gatewayUrl: string, createdAt: string|Date, chainAnchor: Awaited<ReturnType<typeof import("./sorobanEvidence").recordEvidenceCidOnChain>>}}>}
+ */
 async function uploadEvidence(jobId, uploaderAddress, fileBuffer, fileName, mimeType) {
   if (!jobId || !uploaderAddress) {
     const e = new Error("Job ID and uploader address are required");
@@ -271,6 +292,13 @@ async function uploadEvidence(jobId, uploaderAddress, fileBuffer, fileName, mime
   };
 }
 
+/**
+ * Create or resolve a participant dispute; returns the raw snake_case disputes row.
+ * @param {string} jobId Job UUID.
+ * @param {string} resolvedBy Stellar G-address.
+ * @param {"release_funds"|"refund_client"} resolution Arbitrator outcome.
+ * @returns {Promise<{success: boolean, dispute: DisputeRow}>}
+ */
 async function resolveDispute(jobId, resolvedBy, resolution) {
   if (!jobId || !resolvedBy || !resolution) {
     const e = new Error("Job ID, resolver, and resolution are required");
@@ -344,6 +372,11 @@ async function resolveDispute(jobId, resolvedBy, resolution) {
   return { success: true, dispute: rows[0] };
 }
 
+/**
+ * Read job and evidence details; job uses SQL names while evidence uses camelCase.
+ * @param {string} jobId Job UUID.
+ * @returns {Promise<{success: boolean, data: {job: {id: string, title: string, status: string, client_address: string, freelancer_address: string|null, created_at: string|Date}, evidence: Array<{id: string, uploaderAddress: string, fileName: string, fileSize: number, mimeType: string, ipfsCid: string, pinned: boolean, gatewayUrl: string, createdAt: string|Date}>}}>}
+ */
 async function getDispute(jobId) {
   if (!jobId) {
     const e = new Error("Job ID is required");

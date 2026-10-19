@@ -18,32 +18,7 @@ const {
   updateVocabularyAndIdf,
 } = require("./recommendationService");
  
-/**
- * Camel-cased job record returned by this service.
- *
- * @typedef {Object} Job
- * @property {string}   id                  UUID of the job.
- * @property {string}   title               Job title (≥10 chars).
- * @property {string}   description         Job description (≥30 chars).
- * @property {string}   budget              Budget as a fixed-point string (e.g. "500.0000000").
- * @property {("XLM"|"USDC")} currency      Payment currency.
- * @property {string}   category            One of {@link VALID_CATEGORIES}.
- * @property {("public"|"private"|"invite_only")} visibility
- * @property {string[]} skills              Up to 8 skill tags.
- * @property {("open"|"in_progress"|"completed"|"cancelled")} status
- * @property {string}   clientAddress       Stellar G-address of the client.
- * @property {string|null} freelancerAddress Stellar G-address of the hired freelancer, if any.
- * @property {string|null} escrowContractId Soroban contract id for the locked escrow.
- * @property {number}   applicantCount      Cached count of applications for this job.
- * @property {number}   shareCount          Number of times the job link has been shared.
- * @property {boolean}  boosted             True while the listing is Featured.
- * @property {string|null} boostedUntil     ISO timestamp at which boost expires.
- * @property {string|null} deadline         ISO timestamp deadline (optional).
- * @property {string|null} timezone         IANA timezone name for compatibility filtering.
- * @property {string[]} screeningQuestions  Up to 5 screening questions applicants must answer.
- * @property {string}   createdAt           ISO timestamp when the job was created.
- * @property {string}   updatedAt           ISO timestamp of last write.
- */
+/** @typedef {import("./serviceTypes").Job} Job */
  
 /**
  * Input shape accepted by {@link createJob}.
@@ -54,6 +29,8 @@ const {
  * @property {string|number} budget
  * @property {("XLM"|"USDC")} [currency="XLM"]
  * @property {string}   category
+ * @property {("public"|"private"|"invite_only")} [visibility="public"]
+ * @property {Array<{description: string, amount: string|number}>} [milestones] Must sum to budget.
  * @property {string[]} [skills]
  * @property {string}   [deadline]            ISO timestamp.
  * @property {string}   [timezone]            IANA timezone name.
@@ -419,7 +396,7 @@ function tokenize(text) {
  * @param {number|string} id - The ID of the job to retrieve.
  * @param {Object} [options] - Options.
  * @param {boolean} [options.includeDeleted=false] - Include soft-deleted records.
- * @returns {Promise<Object>} The job object.
+ * @returns {Promise<Job>} The job object.
  * @throws {Error} If the job is not found.
  */
 async function getJob(id, { includeDeleted = false } = {}) {
@@ -475,14 +452,24 @@ function decodeCursor(cursor) {
  * @property {number} [limit=50] - Max number of results to return (max 100).
  * @property {string} [search] - Search term for title, description, or skills.
  * @property {string} [cursor] - Pagination cursor.
- * @property {string} [timezone] - Filter by timezone.
+ * @property {string} [timezone] Reserved; currently ignored by the service.
+ * @property {string} [viewerAddress] G-address for visibility filtering.
+ * @property {boolean} [includeExpired]
+ * @property {boolean} [includeDeleted=false]
+ * @property {number|string} [min_budget]
+ * @property {number|string} [max_budget]
+ * @property {string} [skills] Comma-separated skills.
+ * @property {number|string} [min_client_rating]
+ * @property {string} [duration]
+ * @property {string} [posted_since]
+ * @property {number|string} [max_applications]
  */
  
 /**
  * List jobs with optional filtering, searching, and pagination.
  *
  * @param {ListJobsOptions} [options={}] - Options for listing jobs.
- * @returns {Promise<{jobs: Object[], nextCursor: string|null}>} An object containing the list of jobs and an optional next cursor for pagination.
+ * @returns {Promise<{jobs: Job[], nextCursor: string|null, hasMore: boolean}>} An object containing the list of jobs and an optional next cursor for pagination.
  * @throws {Error} If the provided cursor is invalid.
  */
 async function listJobs({
@@ -681,7 +668,7 @@ async function listJobs({
  * @param {string} clientAddress - The Stellar public key of the client.
  * @param {Object} [options] - Options.
  * @param {boolean} [options.includeDeleted=false] - Include soft-deleted records.
- * @returns {Promise<Object[]>} An array of job objects.
+ * @returns {Promise<Job[]>} An array of job objects.
  * @throws {Error} If the clientAddress is an invalid Stellar public key.
  */
 async function listJobsByClient(
@@ -702,7 +689,7 @@ async function listJobsByClient(
  *
  * @param {number|string} id - The ID of the job.
  * @param {string} status - The new status (must be one of VALID_STATUSES).
- * @returns {Promise<Object>} The updated job object.
+ * @returns {Promise<Job>} The updated job object.
  * @throws {Error} If the status is invalid or the job is not found.
  */
 let updateJobStatus = async function (id, status) {
@@ -757,7 +744,7 @@ let updateJobStatus = async function (id, status) {
  *
  * @param {number|string} jobId - The ID of the job.
  * @param {string} freelancerAddress - The Stellar public key of the freelancer.
- * @returns {Promise<Object>} The updated job object.
+ * @returns {Promise<Job>} The updated job object.
  * @throws {Error} If the freelancerAddress is invalid or the job is not found.
  */
 let assignFreelancer = async function (jobId, freelancerAddress) {
@@ -788,8 +775,10 @@ let assignFreelancer = async function (jobId, freelancerAddress) {
  * @param {Object} [options] - Optional overrides.
  * @param {string|number} [options.amount] - Escrow amount override (e.g. accepted bid amount).
  *   Falls back to job.budget when omitted.
- * @returns {Promise<Object>} The updated job object.
+ * @returns {Promise<Job>} The updated job object.
  * @throws {Error} If the escrowContractId is invalid or the job is not found.
+ * @param {Object} [options={}] Escrow and timeline options.
+ * @param {string|null} [options.txHash=null] Funding transaction hash.
  */
 let updateJobEscrowId = async function (
   jobId,
@@ -874,7 +863,7 @@ async function purgeDeletedJobs(days = 90) {
  * @param {number|string} jobId - The ID of the job to boost.
  * @param {string} txHash - The transaction hash of the boost payment.
  * @param {number} [boostDays=7] - Number of days to boost (7 or 30).
- * @returns {Promise<Object>} The updated job object.
+ * @returns {Promise<Job>} The updated job object.
  * @throws {Error} If the job is not found.
  */
 async function boostJob(jobId, txHash, boostDays = 7) {
@@ -907,7 +896,7 @@ async function boostJob(jobId, txHash, boostDays = 7) {
  * Increment the share count for a specific job.
  *
  * @param {number|string} jobId - The ID of the job.
- * @returns {Promise<Object>} The updated job object.
+ * @returns {Promise<void>} Resolves after incrementing; no job record is returned.
  * @throws {Error} If the job is not found.
  */
 async function incrementShareCount(jobId) {
@@ -923,6 +912,15 @@ async function incrementShareCount(jobId) {
   }
 }
  
+/**
+ * Move an in-progress job into dispute and notify its parties.
+ * @param {string} jobId Job UUID.
+ * @param {Object} input Dispute details.
+ * @param {string} input.reason Reason code.
+ * @param {string} input.description Detailed explanation.
+ * @param {string} input.raisedBy Stellar G-address.
+ * @returns {Promise<Job>}
+ */
 async function raiseDispute(jobId, { reason, description, raisedBy }) {
   // Fetch old value before updating (for audit log)
   const { rows: oldRows } = await pool.query(
@@ -988,6 +986,11 @@ async function raiseDispute(jobId, { reason, description, raisedBy }) {
   return job;
 }
  
+/**
+ * Restore a disputed job to in-progress.
+ * @param {string} jobId Job UUID.
+ * @returns {Promise<Job>}
+ */
 async function resolveDispute(jobId) {
   // Fetch old value before updating (for audit log)
   const { rows: oldRows } = await pool.query(
@@ -1034,6 +1037,10 @@ async function resolveDispute(jobId) {
   return job;
 }
  
+/**
+ * Get aggregates for every supported category, including empty categories.
+ * @returns {Promise<Array<{category: string, jobCount: number, avgBudgetXLM: number, filledCount: number, avgDaysToFill: number|null}>>}
+ */
 async function getCategoryAnalytics() {
   const { rows } = await pool.query(`
     SELECT
@@ -1067,6 +1074,10 @@ async function getCategoryAnalytics() {
   }).sort((a, b) => b.jobCount - a.jobCount);
 }
  
+/**
+ * Get aggregates for nondeleted jobs.
+ * @returns {Promise<{totalJobs: number, openJobs: number, inProgressJobs: number, completedJobs: number, avgBudgetXLM: number, totalFilled: number, avgDaysToFill: number|null}>}
+ */
 async function getAnalyticsOverview() {
   const { rows } = await pool.query(`
     SELECT
@@ -1106,7 +1117,7 @@ async function getAnalyticsOverview() {
  * @param {string} jobId - Job UUID.
  * @param {number} days - Number of days to extend (7, 14, or 30).
  * @param {string} clientAddress - The client's Stellar address for ownership validation.
- * @returns {Promise<Object>} The updated job object.
+ * @returns {Promise<Job>} The updated job object.
  * @throws {Error} 400 — invalid input, 403 — not the owner, 404 — not found.
  */
 async function extendJobExpiry(jobId, days = 30, clientAddress) {
@@ -1197,7 +1208,7 @@ async function incrementViewCount(jobId) {
 /**
  * Get job analytics for a specific job.
  * @param {string} jobId
- * @returns {Promise<Object>}
+ * @returns {Promise<{jobId: string, totalApplications: number, acceptedApplications: number, avgBid: string, minBid: string, maxBid: string, totalViews: number, uniqueViews: number}>}
  */
 async function getJobAnalytics(jobId) {
   const { rows: jobRows } = await pool.query(
@@ -1259,7 +1270,7 @@ async function expireOldJobs() {
 /**
  * Get jobs expiring within the given number of days.
  * @param {number} daysFromNow
- * @returns {Promise<Object[]>}
+ * @returns {Promise<Job[]>}
  */
 async function getExpiringJobs(daysFromNow = 3) {
   const { rows } = await pool.query(
@@ -1279,7 +1290,7 @@ async function getExpiringJobs(daysFromNow = 3) {
  * Bulk cancel multiple jobs owned by a client.
  * @param {string[]} jobIds
  * @param {string} clientAddress
- * @returns {Promise<Object[]>}
+ * @returns {Promise<Array<{id: string, success: boolean}>>}
  */
 async function bulkCancelJobs(jobIds, clientAddress) {
   const results = [];
@@ -1304,7 +1315,7 @@ async function bulkCancelJobs(jobIds, clientAddress) {
  * @param {string[]} jobIds
  * @param {string} clientAddress
  * @param {number} days
- * @returns {Promise<Object[]>}
+ * @returns {Promise<Array<{id: string, success: boolean} & Partial<Job>>>}
  */
 async function bulkExtendJobs(jobIds, clientAddress, days = 30) {
   const results = [];
@@ -1324,7 +1335,7 @@ async function bulkExtendJobs(jobIds, clientAddress, days = 30) {
  * @param {string[]} jobIds
  * @param {string} clientAddress
  * @param {string} txHash
- * @returns {Promise<Object[]>}
+ * @returns {Promise<Array<{id: string, success: boolean, boostedUntil?: string|Date|null}>>}
  */
 async function bulkBoostJobs(jobIds, clientAddress, txHash) {
   const results = [];
@@ -1343,7 +1354,7 @@ async function bulkBoostJobs(jobIds, clientAddress, txHash) {
  * Get recommended jobs for a freelancer based on their skills.
  * Excludes jobs the freelancer has already applied to, been accepted for, or rejected from.
  * @param {string} publicKey
- * @returns {Promise<Object[]>}
+ * @returns {Promise<Job[]>}
  */
 async function getRecommendedJobs(publicKey) {
   const { rows: profileRows } = await pool.query(
@@ -1384,6 +1395,11 @@ async function getRecommendedJobs(publicKey) {
   return rows.map(rowToJob);
 }
  
+/**
+ * Suggest titles, skills and categories; nonstring or short queries yield empty arrays.
+ * @param {unknown} query Untrusted search input.
+ * @returns {Promise<{titles: string[], skills: string[], categories: string[]}>}
+ */
 async function getSuggestions(query) {
   // `query` originates from the request query string, which may be an array or
   // object when a parameter is repeated (e.g. ?q=a&q=b). Only a plain string is
@@ -1450,7 +1466,7 @@ const TIMELINE_EVENT_TYPES = [
  * @param {string} jobId     UUID of the job.
  * @param {string} eventType One of the valid TIMELINE_EVENT_TYPES.
  * @param {string|null} [txHash=null] On-chain transaction hash, if applicable.
- * @returns {Promise<Object>} The inserted timeline row.
+ * @returns {Promise<{id: string, job_id?: string, event_type?: string, tx_hash?: string|null, created_at?: string|Date}>} Existing rows contain only id; newly inserted rows include SQL columns.
  * @throws {Error} 400 — invalid eventType.
  */
 async function recordTimelineEvent(jobId, eventType, txHash = null) {
@@ -1482,7 +1498,7 @@ async function recordTimelineEvent(jobId, eventType, txHash = null) {
  * Get all timeline events for a job, ordered by creation time ascending.
  *
  * @param {string} jobId UUID of the job.
- * @returns {Promise<Object[]>} Array of timeline event rows (camel-cased).
+ * @returns {Promise<Array<{id: string, jobId: string, eventType: string, txHash: string|null, createdAt: string|Date}>>} Camel-cased timeline events.
  */
 async function getJobTimeline(jobId) {
   const { rows } = await pool.query(
@@ -1506,6 +1522,11 @@ async function getJobTimeline(jobId) {
  
 // Wrap createJob to record 'job_posted' event
 const _createJob = createJob;
+/**
+ * Apply the job mutation and record its lifecycle timeline event (timeline failures are logged).
+ * @param {CreateJobInput} params Listing fields.
+ * @returns {Promise<Job>}
+ */
 createJob = async function (params) {
   const job = await _createJob(params);
   try {
@@ -1518,6 +1539,12 @@ createJob = async function (params) {
  
 // Wrap assignFreelancer to record 'bid_accepted' event
 const _assignFreelancer = assignFreelancer;
+/**
+ * Apply the job mutation and record its lifecycle timeline event (timeline failures are logged).
+ * @param {string} jobId Job UUID.
+ * @param {string} freelancerAddress Stellar G-address.
+ * @returns {Promise<Job>}
+ */
 assignFreelancer = async function (jobId, freelancerAddress) {
   const job = await _assignFreelancer(jobId, freelancerAddress);
   try {
@@ -1533,6 +1560,12 @@ assignFreelancer = async function (jobId, freelancerAddress) {
  
 // Wrap updateJobStatus to record 'work_completed' event
 const _updateJobStatus = updateJobStatus;
+/**
+ * Apply the job mutation and record its lifecycle timeline event (timeline failures are logged).
+ * @param {string} id Job UUID.
+ * @param {string} status One of VALID_STATUSES.
+ * @returns {Promise<Job>}
+ */
 updateJobStatus = async function (id, status) {
   const job = await _updateJobStatus(id, status);
   if (status === "completed") {
@@ -1550,6 +1583,15 @@ updateJobStatus = async function (id, status) {
  
 // Extend updateJobEscrowId to accept optional txHash for recording escrow_funded event
 const _updateJobEscrowId = updateJobEscrowId;
+/**
+ * Apply the job mutation and record its lifecycle timeline event (timeline failures are logged).
+ * @param {string} jobId Job UUID.
+ * @param {string} escrowContractId Soroban C-address.
+ * @param {Object} [options={}] Escrow and timeline options.
+ * @param {number|string} [options.amount] XLM amount; defaults to job budget.
+ * @param {string|null} [options.txHash=null] Funding transaction hash.
+ * @returns {Promise<Job>}
+ */
 updateJobEscrowId = async function (jobId, escrowContractId, options = {}) {
   const { txHash = null, ...escrowOptions } = options;
   const job = await _updateJobEscrowId(jobId, escrowContractId, escrowOptions);

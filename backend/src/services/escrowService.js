@@ -1,3 +1,6 @@
+/** @typedef {import("./serviceTypes").EscrowState} EscrowState */
+/** @typedef {import("./serviceTypes").Milestone} Milestone */
+/** @typedef {import("./serviceTypes").DisputeRow} DisputeRow */
 "use strict";
 
 const pool = require("../db/pool");
@@ -19,6 +22,11 @@ const ESCROW_TIMEOUT_DAYS = 7;
 const ESCROW_TIMEOUT_CHECK_MIN_DELAY_MS = 55 * 1000;
 const ESCROW_TIMEOUT_CHECK_MAX_DELAY_MS = 65 * 1000;
 
+/**
+ * Sample an integer delay within the configured inclusive bounds.
+ * @param {function(): number} [random=Math.random] Random source in [0, 1).
+ * @returns {number}
+ */
 function getEscrowTimeoutCheckDelay(random = Math.random) {
   return Math.floor(
     random() * (ESCROW_TIMEOUT_CHECK_MAX_DELAY_MS - ESCROW_TIMEOUT_CHECK_MIN_DELAY_MS + 1),
@@ -32,6 +40,8 @@ const HORIZON_URL = process.env.HORIZON_URL || "https://horizon-testnet.stellar.
  * Verify that a Stellar account exists on the network by checking Horizon.
  * Throws a 400 error with a descriptive message if the account is not found.
  * Returns true if the account exists.
+ * @param {string} freelancerAddress Stellar G-address.
+ * @returns {Promise<boolean>}
  */
 async function verifyFreelancerAccount(freelancerAddress) {
   if (!freelancerAddress || !/^G[A-Z0-9]{55}$/.test(freelancerAddress)) {
@@ -64,6 +74,12 @@ async function verifyFreelancerAccount(freelancerAddress) {
   }
 }
 
+/**
+ * Normalize milestone amounts and snake/camel timestamps, defaulting to one final delivery.
+ * @param {Array<{description?: string, amount?: string|number, status?: string, releasedAt?: string|Date|null, released_at?: string|Date|null, disputedAt?: string|Date|null, disputed_at?: string|Date|null}>} milestones Milestone inputs.
+ * @param {number|string} fallbackAmount Default XLM amount.
+ * @returns {Milestone[]}
+ */
 function normalizeMilestones(milestones, fallbackAmount) {
   if (!Array.isArray(milestones) || milestones.length === 0) {
     return [
@@ -225,6 +241,13 @@ function validateMilestoneReleaseOrder(milestones, milestoneIndex) {
   }
 }
 
+/**
+ * Release escrow and complete its job.
+ * @param {string} jobId Job UUID.
+ * @param {string} clientAddress Stellar G-address.
+ * @param {string} [contractTxHash] On-chain transaction hash; omit for the off-chain fallback.
+ * @returns {Promise<{success: boolean, message: string, referralBonus?: {referrer: string, bonusXlm: string}, milestone?: Milestone, milestones?: Milestone[], allReleased?: boolean}>}
+ */
 async function releaseFunds(jobId, clientAddress, contractTxHash) {
   const job = await getJob(jobId);
   if (job.clientAddress !== clientAddress) {
@@ -341,6 +364,13 @@ async function releaseFunds(jobId, clientAddress, contractTxHash) {
   };
 }
 
+/**
+ * Refund funded escrow to its owning client.
+ * @param {string} jobId Job UUID.
+ * @param {string} clientAddress Stellar G-address.
+ * @param {string} [contractTxHash] On-chain transaction hash; omit for the off-chain fallback.
+ * @returns {Promise<{success: boolean, message: string, referralBonus?: {referrer: string, bonusXlm: string}, milestone?: Milestone, milestones?: Milestone[], allReleased?: boolean}>}
+ */
 async function refundClient(jobId, clientAddress, contractTxHash) {
   const job = await getJob(jobId);
   if (job.clientAddress !== clientAddress) {
@@ -390,6 +420,14 @@ async function refundClient(jobId, clientAddress, contractTxHash) {
   return { success: true, message: "Escrow refunded" };
 }
 
+/**
+ * Refund timed-out escrow and record request audit metadata.
+ * @param {string} jobId Job UUID.
+ * @param {string} clientAddress Stellar G-address.
+ * @param {string} [contractTxHash] On-chain transaction hash; omit for the off-chain fallback.
+ * @param {import("express").Request|null} [req=null] Optional audit request.
+ * @returns {Promise<{success: boolean, message: string}>}
+ */
 async function timeoutRefund(jobId, clientAddress, contractTxHash, req = null) {
   const job = await getJob(jobId);
   if (job.clientAddress !== clientAddress) {
@@ -455,6 +493,12 @@ async function timeoutRefund(jobId, clientAddress, contractTxHash, req = null) {
   };
 }
 
+/**
+ * Mark escrow disputed and create a raw database dispute record.
+ * @param {string} jobId Job UUID.
+ * @param {string} raisedBy Stellar G-address.
+ * @returns {Promise<{success: boolean, dispute: DisputeRow}>}
+ */
 async function markDisputed(jobId, raisedBy) {
   const job = await getJob(jobId);
   if (
@@ -499,6 +543,14 @@ async function markDisputed(jobId, raisedBy) {
   return { success: true, dispute: result.rows[0] };
 }
 
+/**
+ * Update one milestone after checking ownership and escrow state.
+ * @param {string} jobId Job UUID.
+ * @param {number|string} milestoneIndex Zero-based milestone index.
+ * @param {string} clientAddress Stellar G-address.
+ * @param {string} [contractTxHash] On-chain transaction hash; omit for the off-chain fallback.
+ * @returns {Promise<{success: boolean, message: string, milestone: Milestone, milestones: Milestone[], allReleased?: boolean}>}
+ */
 async function releaseMilestone(jobId, milestoneIndex, clientAddress, contractTxHash) {
   const job = await getJob(jobId);
   if (job.clientAddress !== clientAddress) {
@@ -583,6 +635,14 @@ async function releaseMilestone(jobId, milestoneIndex, clientAddress, contractTx
   };
 }
 
+/**
+ * Update one milestone after checking ownership and escrow state.
+ * @param {string} jobId Job UUID.
+ * @param {number|string} milestoneIndex Zero-based milestone index.
+ * @param {string} clientAddress Stellar G-address.
+ * @param {string} [contractTxHash] On-chain transaction hash; omit for the off-chain fallback.
+ * @returns {Promise<{success: boolean, message: string, milestone: Milestone, milestones: Milestone[], allReleased?: boolean}>}
+ */
 async function rejectMilestone(jobId, milestoneIndex, clientAddress, contractTxHash) {
   const job = await getJob(jobId);
   if (job.clientAddress !== clientAddress) {
@@ -655,6 +715,13 @@ async function rejectMilestone(jobId, milestoneIndex, clientAddress, contractTxH
   };
 }
 
+/**
+ * Open a participant dispute for one milestone.
+ * @param {string} jobId Job UUID.
+ * @param {number|string} milestoneIndex Zero-based milestone index.
+ * @param {string} raisedBy Stellar G-address.
+ * @returns {Promise<{success: boolean, dispute: DisputeRow, milestone: Milestone, milestones: Milestone[]}>}
+ */
 async function disputeMilestone(jobId, milestoneIndex, raisedBy) {
   const job = await getJob(jobId);
   if (job.clientAddress !== raisedBy && job.freelancerAddress !== raisedBy) {
@@ -710,10 +777,22 @@ async function disputeMilestone(jobId, milestoneIndex, raisedBy) {
   return { success: true, dispute: result.rows[0], milestone: milestones[index], milestones };
 }
 
+/**
+ * Release milestone zero through the normal release flow.
+ * @param {string} jobId Job UUID.
+ * @param {string} clientAddress Stellar G-address.
+ * @param {string} [contractTxHash] On-chain transaction hash; omit for the off-chain fallback.
+ * @returns {Promise<{success: boolean, message: string, referralBonus?: {referrer: string, bonusXlm: string}, milestone?: Milestone, milestones?: Milestone[], allReleased?: boolean}>}
+ */
 async function partialRelease(jobId, clientAddress, contractTxHash) {
   return releaseMilestone(jobId, 0, clientAddress, contractTxHash);
 }
 
+/**
+ * Read a raw snake_case escrow row; rejects with status 404 when absent.
+ * @param {string} jobId Job UUID.
+ * @returns {Promise<EscrowState>}
+ */
 async function getEscrow(jobId) {
   const { rows } = await pool.query(
     "SELECT * FROM escrows WHERE job_id = $1",
@@ -731,6 +810,12 @@ async function getEscrow(jobId) {
 // identifier and quoted; the values stay parameterised.
 const ESCROW_FIELD_PATTERN = /^[a-z_][a-z0-9_]{0,62}$/;
 
+/**
+ * Read a column or undefined when the escrow is absent; rejects invalid identifiers.
+ * @param {string} jobId Job UUID.
+ * @param {string} field Bare snake_case SQL column name.
+ * @returns {Promise<unknown>}
+ */
 async function getEscrowField(jobId, field) {
   // typeof first: the pattern would otherwise coerce null/undefined into the
   // strings "null"/"undefined", which are perfectly good column shapes.
@@ -750,6 +835,8 @@ async function getEscrowField(jobId, field) {
  *
  * Returns `null` if no mapping exists yet (e.g., the ledger hasn't been
  * processed by the indexer, or `timeout_ledger` is not set on the escrow).
+ * @param {number|string|null} ledger Ledger sequence, not Unix time.
+ * @returns {Promise<string|Date|null>}
  */
 async function resolveLedgerTimestamp(ledger) {
   if (!ledger) return null;
@@ -768,6 +855,8 @@ async function resolveLedgerTimestamp(ledger) {
  * time for that ledger in `ledger_timestamps` and attaches it as
  * `timeout_at_resolved`, letting callers display a human-readable countdown
  * without hardcoding ledger-time approximations.
+ * @param {string} jobId Job UUID.
+ * @returns {Promise<EscrowState & {timeout_at_resolved: string|Date|null}>}
  */
 async function getEscrowWithTimeout(jobId) {
   const escrow = await getEscrow(jobId);
@@ -775,6 +864,10 @@ async function getEscrowWithTimeout(jobId) {
   return { ...escrow, timeout_at_resolved: timeoutAt };
 }
 
+/**
+ * Run the guardian immediately and schedule recurring jittered checks. Timers are unreferenced; no cancellation handle is returned.
+ * @returns {Promise<void>}
+ */
 async function startEscrowTimeoutChecker() {
   const timeoutLogger = createServiceLogger('escrow-timeout');
 
@@ -817,6 +910,13 @@ async function startEscrowTimeoutChecker() {
   scheduleNextCheck();
 }
 
+/**
+ * Record the hired freelancer's SHA-256 deliverable digest.
+ * @param {string} jobId Job UUID.
+ * @param {string} freelancerAddress Stellar G-address.
+ * @param {string} hashHex 64-character hexadecimal SHA-256 digest.
+ * @returns {Promise<{success: boolean, submission: {id: number, job_id: string, freelancer_address: string, hash_hex: string, created_at: string|Date}}>}
+ */
 async function submitDeliverableHash(jobId, freelancerAddress, hashHex) {
   const job = await getJob(jobId);
 
@@ -855,6 +955,14 @@ async function submitDeliverableHash(jobId, freelancerAddress, hashHex) {
   return { success: true, submission: rows[0] };
 }
 
+/**
+ * Request or approve a participant timeout extension; returns the raw extension row.
+ * @param {string} jobId Job UUID.
+ * @param {string} requestedBy Stellar G-address.
+ * @param {number|string} newTimeoutLedger Future ledger sequence exceeding the existing timeout.
+ * @param {string} [contractTxHash] On-chain transaction hash; omit for the off-chain fallback.
+ * @returns {Promise<{success: boolean, extension: {id: number, job_id: string, requested_by: string, new_timeout_ledger: number, status: string, approved_by?: string|null, approved_at?: string|Date|null, created_at: string|Date, updated_at: string|Date}}>}
+ */
 async function requestEscrowExtension(jobId, requestedBy, newTimeoutLedger, contractTxHash) {
   const job = await getJob(jobId);
   if (job.clientAddress !== requestedBy && job.freelancerAddress !== requestedBy) {
@@ -920,6 +1028,13 @@ async function requestEscrowExtension(jobId, requestedBy, newTimeoutLedger, cont
   return { success: true, extension: rows[0] };
 }
 
+/**
+ * Request or approve a participant timeout extension; returns the raw extension row.
+ * @param {string} jobId Job UUID.
+ * @param {string} approvedBy Stellar G-address.
+ * @param {string} [contractTxHash] On-chain transaction hash; omit for the off-chain fallback.
+ * @returns {Promise<{success: boolean, extension: {id: number, job_id: string, requested_by: string, new_timeout_ledger: number, status: string, approved_by?: string|null, approved_at?: string|Date|null, created_at: string|Date, updated_at: string|Date}}>}
+ */
 async function approveEscrowExtension(jobId, approvedBy, contractTxHash) {
   const job = await getJob(jobId);
 

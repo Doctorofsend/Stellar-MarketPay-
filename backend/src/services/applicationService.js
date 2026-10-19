@@ -1,3 +1,16 @@
+/** @typedef {import("./serviceTypes").Application} Application */
+/**
+ * Input shape accepted by {@link submitApplication}.
+ *
+ * @typedef {Object} SubmitApplicationInput
+ * @property {string} jobId
+ * @property {string} freelancerAddress
+ * @property {string} proposal
+ * @property {string|number} bidAmount
+ * @property {("XLM"|"USDC")} [currency="XLM"]
+ * @property {Object<string,string>} [screeningAnswers]  Required only when the parent
+ *                                                       job has screening questions.
+ */
 /**
  * src/services/applicationService.js
  *
@@ -62,6 +75,11 @@ if (process.env.NODE_ENV === 'test') {
     };
   }
 
+/**
+ * Submit a freelancer proposal to an open job.
+ * @param {SubmitApplicationInput} input Proposal fields.
+ * @returns {Promise<Application>}
+ */
   async function submitApplication({ jobId, freelancerAddress, proposal, bidAmount, currency = 'XLM', screeningAnswers }) {
     validatePublicKey(freelancerAddress);
 
@@ -127,6 +145,12 @@ if (process.env.NODE_ENV === 'test') {
     return rowToApp(appRow);
   }
 
+/**
+ * Accept a proposal and assign its freelancer to the job.
+ * @param {string} applicationId Application UUID.
+ * @param {string} clientAddress Stellar G-address.
+ * @returns {Promise<Application>}
+ */
   async function acceptApplication(applicationId, clientAddress) {
     validatePublicKey(clientAddress);
 
@@ -164,6 +188,13 @@ if (process.env.NODE_ENV === 'test') {
     return rowToApp(store.applications.get(applicationId));
   }
 
+/**
+ * Change status and append a history entry.
+ * @param {string} applicationId Application UUID.
+ * @param {"pending"|"shortlisted"|"accepted"|"rejected"} newStatus New application status.
+ * @param {string|null} changedBy Acting public key.
+ * @returns {Promise<Application>}
+ */
   async function updateStatus(applicationId, newStatus, changedBy) {
     const app = store.applications.get(applicationId);
     if (!app) { const e = new Error('Application not found'); e.status = 404; throw e; }
@@ -177,6 +208,11 @@ if (process.env.NODE_ENV === 'test') {
     return rowToApp(app);
   }
 
+/**
+ * Read status changes chronologically; rejects missing applications.
+ * @param {string} applicationId Application UUID.
+ * @returns {Promise<import("./serviceTypes").ApplicationStatusEntry[]>}
+ */
   async function getApplicationStatusHistory(applicationId) {
     if (!store.applications.has(applicationId)) { const e = new Error('Application not found'); e.status = 404; throw e; }
     return statusHistory.get(applicationId) || [];
@@ -184,6 +220,14 @@ if (process.env.NODE_ENV === 'test') {
 
   module.exports = {
     submitApplication,
+    /**
+     * Test-store adapter: returns an array with a nextCursor property, unlike the SQL envelope.
+     * @param {string} jobId Job UUID.
+     * @param {Object} [options={}] Pagination.
+     * @param {number} [options.limit=20] Page size.
+     * @param {string|null} [options.cursor=null] Opaque cursor.
+     * @returns {Promise<Application[] & {nextCursor: string|null}>}
+     */
     getApplicationsForJob: async (jobId, { limit = 20, cursor = null } = {}) => {
       const rows = Array.from(store.applications.values())
         .filter(a => a.jobId === jobId)
@@ -196,6 +240,11 @@ if (process.env.NODE_ENV === 'test') {
       applications.nextCursor = hasNext ? encodeApplicationCursor(page[limit - 1]) : null;
       return applications;
     },
+    /**
+     * Read applications belonging to the freelancer from the in-memory test store.
+     * @param {string} freelancerAddress Stellar G-address.
+     * @returns {Promise<Application[]>}
+     */
     getApplicationsForFreelancer: async (freelancerAddress) => Array.from(store.applications.values()).filter(a => a.freelancerAddress === freelancerAddress).map(rowToApp),
     acceptApplication,
     updateStatus,
@@ -206,34 +255,9 @@ if (process.env.NODE_ENV === 'test') {
 else {
   const pool = require("../db/pool");
   const { getJob, assignFreelancer } = require("./jobService");
-/**
- * Camel-cased application record returned by this service.
- *
- * @typedef {Object} Application
- * @property {string} id                 UUID of the application.
- * @property {string} jobId              UUID of the parent job.
- * @property {string} freelancerAddress  Stellar G-address of the applicant.
- * @property {string} freelancerTier     Computed tier label (see `calculateFreelancerTier`).
- * @property {string} proposal           Cover letter / proposal text (≥50 chars).
- * @property {string} bidAmount          Bid as a fixed-point string (e.g. "450.0000000").
- * @property {("XLM"|"USDC")} currency   Bid currency.
- * @property {("pending"|"accepted"|"rejected")} status
- * @property {Object<string,string>} screeningAnswers  Map of question → answer.
- * @property {string} createdAt          ISO timestamp.
- */
 
-/**
- * Input shape accepted by {@link submitApplication}.
- *
- * @typedef {Object} SubmitApplicationInput
- * @property {string} jobId
- * @property {string} freelancerAddress
- * @property {string} proposal
- * @property {string|number} bidAmount
- * @property {("XLM"|"USDC")} [currency="XLM"]
- * @property {Object<string,string>} [screeningAnswers]  Required only when the parent
- *                                                       job has screening questions.
- */
+
+
 
 /**
  * Throws a 400 Error when `key` is not a valid Stellar G-address.
@@ -406,7 +430,10 @@ async function submitApplication({
  * compute a freelancer tier label.
  *
  * @param {string} jobId  UUID of the job.
- * @returns {Promise<Application[]>}
+ * @returns {Promise<{applications: Application[], nextCursor: string|null}>}
+ * @param {Object} [options={}] Pagination.
+ * @param {number} [options.limit=20] Page size.
+ * @param {string|null} [options.cursor=null] Opaque cursor.
  */
 async function getApplicationsForJob(jobId, { limit = 20, cursor = null } = {}) {
   const values = [jobId];
@@ -443,7 +470,7 @@ async function getApplicationsForJob(jobId, { limit = 20, cursor = null } = {}) 
  * List every application submitted by a freelancer, newest first.
  *
  * @param {string} freelancerAddress  Stellar G-address of the freelancer.
- * @returns {Promise<Application[]>}
+ * @returns {Promise<{applications: Application[], nextCursor: string|null}>}
  * @throws {Error} 400 — invalid Stellar public key.
  */
 async function getApplicationsForFreelancer(freelancerAddress) {
@@ -533,6 +560,13 @@ async function getApplicationsForFreelancer(freelancerAddress) {
   }
 }
 
+/**
+ * Change status and append a history entry.
+ * @param {string} applicationId Application UUID.
+ * @param {"pending"|"shortlisted"|"accepted"|"rejected"} newStatus New application status.
+ * @param {string|null} changedBy Acting public key.
+ * @returns {Promise<Application>}
+ */
   async function updateStatus(applicationId, newStatus, changedBy) {
     if (!['pending', 'shortlisted', 'accepted', 'rejected'].includes(newStatus)) {
       const e = new Error('Invalid application status'); e.status = 400; throw e;
@@ -557,6 +591,11 @@ async function getApplicationsForFreelancer(freelancerAddress) {
     finally { client.release(); }
   }
 
+/**
+ * Read status changes chronologically; rejects missing applications.
+ * @param {string} applicationId Application UUID.
+ * @returns {Promise<import("./serviceTypes").ApplicationStatusEntry[]>}
+ */
   async function getApplicationStatusHistory(applicationId) {
     const { rows: appRows } = await pool.query('SELECT id FROM applications WHERE id = $1', [applicationId]);
     if (!appRows.length) { const e = new Error('Application not found'); e.status = 404; throw e; }

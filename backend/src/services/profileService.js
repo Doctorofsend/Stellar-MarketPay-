@@ -103,6 +103,9 @@ const FREELANCER_TIERS = {
  * @property {string}            [email] - Email address for notifications
  * @property {boolean}           [emailNotificationsEnabled] - Enable email notifications
  * @property {string}            [webhookUrl] - Webhook URL for notifications
+ * @property {string}            [phone]
+ * @property {string}            [kycData] Sensitive payload encrypted at rest.
+ * @property {string}            [encryptionPublicKey]
  * @property {string}            [webhookSecret] - Secret for webhook HMAC
  */
 
@@ -273,7 +276,7 @@ function rowToProfile(row) {
  * Retrieve a user profile by their Stellar public key. Includes average rating and rating count.
  *
  * @param {string} publicKey - The Stellar public key of the user.
- * @returns {Promise<Object>} The user profile object.
+ * @returns {Promise<UserProfile>} The user profile object.
  * @throws {Error} If the public key is invalid or the profile is not found.
  */
 async function getProfile(publicKey) {
@@ -364,7 +367,7 @@ async function getProfile(publicKey) {
  * Create or update a user profile. Only provided fields will be updated if the profile already exists.
  *
  * @param {UpsertProfileInput} params - The profile details to upsert.
- * @returns {Promise<Object>} The created or updated profile object.
+ * @returns {Promise<UserProfile>} The created or updated profile object.
  * @throws {Error} If the public key is invalid.
  *
  * @example
@@ -527,6 +530,16 @@ function decodeProfileCursor(cursor) {
   }
 }
 
+/**
+ * List profiles using filters and an opaque pagination cursor.
+ * @param {Object} [options={}] Filters.
+ * @param {string} [options.role] Role filter.
+ * @param {string} [options.availability] Availability status.
+ * @param {string} [options.search] Profile search.
+ * @param {number} [options.limit=50] Maximum page size.
+ * @param {string} [options.after] Opaque cursor.
+ * @returns {Promise<{profiles: UserProfile[], nextCursor: string|null, hasMore: boolean}>}
+ */
 async function listProfiles({ role, availability, search, limit = 50, after } = {}) {
   const conditions = ["(deletion_status IS NULL OR deletion_status = 'active')"];
   const values = [];
@@ -600,6 +613,12 @@ async function listProfiles({ role, availability, search, limit = 50, after } = 
   return { profiles, nextCursor, hasMore };
 }
 
+/**
+ * Check a client block list.
+ * @param {string} clientPublicKey Stellar G-address.
+ * @param {string} freelancerAddress Stellar G-address.
+ * @returns {Promise<boolean>}
+ */
 async function isBlocked(clientPublicKey, freelancerAddress) {
   validatePublicKey(clientPublicKey);
   validatePublicKey(freelancerAddress);
@@ -611,6 +630,12 @@ async function isBlocked(clientPublicKey, freelancerAddress) {
   return rows.length > 0;
 }
 
+/**
+ * Add a freelancer to the client block list.
+ * @param {string} clientPublicKey Stellar G-address.
+ * @param {string} freelancerAddress Stellar G-address.
+ * @returns {Promise<UserProfile>}
+ */
 async function blockFreelancer(clientPublicKey, freelancerAddress) {
   validatePublicKey(clientPublicKey);
   validatePublicKey(freelancerAddress);
@@ -643,6 +668,12 @@ async function blockFreelancer(clientPublicKey, freelancerAddress) {
   return rowToProfile(rows[0]);
 }
 
+/**
+ * Remove a freelancer from the client block list.
+ * @param {string} clientPublicKey Stellar G-address.
+ * @param {string} freelancerAddress Stellar G-address.
+ * @returns {Promise<UserProfile>}
+ */
 async function unblockFreelancer(clientPublicKey, freelancerAddress) {
   validatePublicKey(clientPublicKey);
   validatePublicKey(freelancerAddress);
@@ -723,8 +754,8 @@ async function endorseSkill({ skill, endorserAddress, recipientAddress }) {
 
 /**
  * Calculate freelancer tier from profile and job-history metrics.
- * @param {Object|number} metrics
- * @param {number|null} rating
+ * @param {{completedJobs?: number, totalJobs?: number, rating?: number|null, totalEarnedXlm?: number|string, createdAt?: string|Date}|number} metrics
+ * @param {number|null} [rating=null]
  * @returns {string}
  */
 function calculateFreelancerTier(metrics, rating = null) {
@@ -755,6 +786,12 @@ function calculateFreelancerTier(metrics, rating = null) {
   return FREELANCER_TIERS.NEWCOMER;
 }
 
+/**
+ * Calculate tier from profile/job/rating aggregates.
+ * @param {string} publicKey Stellar G-address.
+ * @param {import("pg").Pool|import("pg").PoolClient} [queryRunner=pool] Pool or active transaction client.
+ * @returns {Promise<string>}
+ */
 async function calculateTier(publicKey, queryRunner = pool) {
   validatePublicKey(publicKey);
 
@@ -790,6 +827,12 @@ async function calculateTier(publicKey, queryRunner = pool) {
   });
 }
 
+/**
+ * Refresh cached aggregates and notify on a tier change.
+ * @param {string} publicKey Stellar G-address.
+ * @param {import("pg").Pool|import("pg").PoolClient} [queryRunner=pool] Pool or active transaction client.
+ * @returns {Promise<string>}
+ */
 async function refreshFreelancerTier(publicKey, queryRunner = pool) {
   validatePublicKey(publicKey);
 
@@ -837,6 +880,11 @@ async function refreshFreelancerTier(publicKey, queryRunner = pool) {
   return newTier;
 }
 
+/**
+ * Read spending; money remains decimal strings and counts are numeric.
+ * @param {string} publicKey Stellar G-address.
+ * @returns {Promise<{totalSpentXlm: string, jobsBreakdown: {posted: number, completed: number, cancelled: number, inProgress: number}, averageBudgetXlm: string, averagePaidXlm: string, topFreelancers: Array<{freelancerAddress: string, jobsCount: number, totalPaidXlm: string}>, hasCompletedJobs: boolean}>}
+ */
 async function getClientSpendingAnalytics(publicKey) {
   validatePublicKey(publicKey);
 
@@ -902,6 +950,11 @@ async function getClientSpendingAnalytics(publicKey) {
   };
 }
 
+/**
+ * Read a 0..5 score; rates are percentages and time measurements are hours.
+ * @param {string} publicKey Stellar G-address.
+ * @returns {Promise<{publicKey: string, score: number, paymentReleaseRate: number, disputeRate: number, completionRate: number, avgTimeToReleaseHours: number, responseTimeToApplicationsHours: number, totals: {totalJobs: number, completedJobs: number, disputedJobs: number, totalReleased: number, releasedOnTime: number}}>}
+ */
 async function getClientReputation(publicKey) {
   validatePublicKey(publicKey);
 
@@ -985,6 +1038,11 @@ async function getClientReputation(publicKey) {
   };
 }
 
+/**
+ * Get freelancer application counts and success rate.
+ * @param {string} publicKey Stellar G-address.
+ * @returns {Promise<{totalApplications: number, acceptedApplications: number, successRate: number}>}
+ */
 async function getProfileStats(publicKey) {
   validatePublicKey(publicKey);
 
@@ -1010,6 +1068,11 @@ async function getProfileStats(publicKey) {
   return { totalApplications, acceptedApplications, successRate };
 }
 
+/**
+ * Get mean escrow funding-to-release duration in days, or null without releases.
+ * @param {string} publicKey Stellar G-address.
+ * @returns {Promise<{averageDays: number|null}>}
+ */
 async function getResponseTime(publicKey) {
   validatePublicKey(publicKey);
 
@@ -1035,7 +1098,7 @@ async function getResponseTime(publicKey) {
  * Starts the 30-day grace period.
  * 
  * @param {string} publicKey 
- * @returns {Promise<Object>}
+ * @returns {Promise<UserProfile>}
  */
 async function markProfileForDeletion(publicKey) {
   validatePublicKey(publicKey);
