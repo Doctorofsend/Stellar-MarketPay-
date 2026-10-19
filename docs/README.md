@@ -11,6 +11,6 @@ For the comprehensive index and navigation guide, please see **[INDEX.md](./INDE
 - **[Database Schema & ERD](./database-schema.md)** — Detailed schema definitions and index tuning
 - **[API Documentation](./api.md)** — REST API endpoints
 - **[Authentication Flow (SEP-10)](./auth-flow.md)** — Stellar SEP-10 wallet authentication flow
-- **[Dispute Resolution](./dispute-resolution.md)** — On-chain arbitration and evidence management
+- **[Dispute Resolution](./dispute-resolution.md)** — Backend dispute records, evidence handling, and the separate Soroban contract workflow
 - **[Architecture Overview](./architecture.md)** — High-level system architecture
 - **[FAQ](./FAQ.md)** — Frequently asked questions
